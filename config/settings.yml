@@ -3,7 +3,6 @@ plugins:
     default: false
     client: false
 
-  # Groups whose newly created memberships should trigger notifications.
   added_to_group_notifier_groups:
     default: ""
     type: group_list
@@ -11,19 +10,12 @@ plugins:
     allow_any: false
     client: false
 
-  # Pipe-separated usernames, for example:
-  # alice|bob|charlie
-  #
-  # This is intentionally a text setting rather than type: list because the
-  # values are arbitrary Discourse usernames and are not selected from a
-  # predefined choices list.
   added_to_group_notifier_recipient_usernames:
     default: ""
     type: text
-    description: "Pipe-separated usernames that should receive notifications."
+    description: "Pipe-separated usernames that should receive notification private messages."
     client: false
 
-  # Groups whose members should receive the private messages.
   added_to_group_notifier_recipient_groups:
     default: ""
     type: group_list
@@ -34,12 +26,12 @@ plugins:
   added_to_group_notifier_pm_title:
     default: "New member in %{group_name}"
     type: string
-    description: "Private-message title template."
+    description: "Notification private-message title template."
     client: false
 
   added_to_group_notifier_pm_body:
     default: "%{username} was just added to the %{group_name} group at %{added_at}."
     type: text
     textarea: true
-    description: "Private-message body template."
+    description: "Notification private-message body template."
     client: false
