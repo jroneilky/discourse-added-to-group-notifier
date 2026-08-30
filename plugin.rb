@@ -166,67 +166,56 @@ module ::AddedToGroupNotifier
     Thread.current[:added_to_group_notifier_group_user_created_at] || Time.zone.now
   end
 
-  def send_notification!(group_user, recipient_usernames, recipient_group_names)
-    user = group_user.user
-    group = group_user.group
+def send_notification!(group_user, recipient_usernames, recipient_group_names)
+  user = group_user.user
+  group = group_user.group
 
-    return :skip if user.blank? || group.blank?
+  return :skip if user.blank? || group.blank?
+  return :already_processed if already_processed?(group_user.id)
 
-    return :already_processed if already_processed?(group_user.id)
+  vars = {
+    username: user.username,
+    group_name: group.name,
+    added_at: group_user.created_at.in_time_zone.iso8601
+  }
 
-    vars = {
-      username: user.username,
-      group_name: group.name,
-      added_at: group_user.created_at.in_time_zone.iso8601
-    }
+  options = {
+    archetype: Archetype.private_message,
+    title: render_template(
+      SiteSetting.added_to_group_notifier_pm_title,
+      vars
+    ),
+    raw: render_template(
+      SiteSetting.added_to_group_notifier_pm_body,
+      vars
+    )
+  }
 
-    options = {
-      archetype: Archetype.private_message,
-      title: render_template(
-        SiteSetting.added_to_group_notifier_pm_title,
-        vars
-      ),
-      raw: render_template(
-        SiteSetting.added_to_group_notifier_pm_body,
-        vars
-      )
-    }
+  options[:target_usernames] = recipient_usernames.join(",") if recipient_usernames.present?
+  options[:target_group_names] = recipient_group_names.join(",") if recipient_group_names.present?
 
-    if recipient_usernames.present?
-      options[:target_usernames] = recipient_usernames.join(",")
-    end
+  creator = PostCreator.new(Discourse.system_user, options)
+  post = creator.create
 
-    if recipient_group_names.present?
-      options[:target_group_names] = recipient_group_names.join(",")
-    end
-
-    creator = PostCreator.new(Discourse.system_user, options)
-    post = creator.create
-
-    if post.blank?
-      errors = creator.errors.full_messages.join(", ")
-
-      Rails.logger.warn(
-        "[#{PLUGIN_NAME}] Failed to create PM for GroupUser ##{group_user.id}: " \
-        "#{errors.presence || "unknown error"}"
-      )
-
-      return :failed
-    end
-
-    # Mark only after PostCreator successfully creates the PM. This prevents
-    # normal validation failures from being permanently lost.
-    mark_processed!(group_user.id)
-
-    :success
-  rescue StandardError => e
-    Rails.logger.error(
-      "[#{PLUGIN_NAME}] Exception while processing GroupUser ##{group_user.id}: " \
-      "#{e.class}: #{e.message}\n#{e.backtrace&.first(10)&.join("\n")}"
+  if post.blank?
+    Rails.logger.warn(
+      "[#{PLUGIN_NAME}] Failed to create PM for GroupUser ##{group_user.id}: " \
+      "#{creator.errors.full_messages.join(", ").presence || "unknown error"}"
     )
 
-    :failed
+    return :failed
   end
+
+  mark_processed!(group_user.id)
+  :success
+rescue StandardError => e
+  Rails.logger.error(
+    "[#{PLUGIN_NAME}] Exception while processing GroupUser ##{group_user.id}: " \
+    "#{e.class}: #{e.message}\n#{e.backtrace&.first(10)&.join("\n")}"
+  )
+
+  :failed
+end
 
   def check!
     return unless SiteSetting.added_to_group_notifier_enabled
