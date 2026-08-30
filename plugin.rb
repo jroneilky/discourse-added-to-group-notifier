@@ -1,82 +1,100 @@
 # name: discourse-added-to-group-notifier
 # about: Sends a PM (from the system user) to configured recipients when a user is added to one of a configured list of groups. Polls the DB on a schedule rather than relying on Discourse's user_added_to_group event, so it works reliably even when membership changes come from bulk/dynamic-group syncs that bypass that event.
-# version: 0.3
+# version: 0.4
 # authors: jronielky
 
 enabled_site_setting :added_to_group_notifier_enabled
 
 module ::AddedToGroupNotifier
   PLUGIN_NAME = "discourse-added-to-group-notifier"
+
   LAST_CHECKED_AT_KEY = "last_checked_at"
   PROCESSED_PREFIX = "processed_group_user_"
+
   LOCK_NAME = "discourse-added-to-group-notifier-check"
   LOCK_VALIDITY = 10.minutes
 
+  POLLING_LOOKBACK = 10.minutes
+  BATCH_SIZE = 100
+
+  TEMPLATE_VARIABLES = %i[username group_name added_at].freeze
+
   module_function
 
-  def render_template(template, vars)
-    template.to_s.gsub(/%\{(\w+)\}/) do
-      key = Regexp.last_match(1).to_sym
-
-      if vars.key?(key)
-        vars[key].to_s
-      else
-        Rails.logger.warn(
-          "[#{PLUGIN_NAME}] Unknown template variable: #{key}"
-        )
-
-        "%{#{key}}"
-      end
-    end
-  end
-
+  # Returns the numeric IDs configured in a Discourse group_list setting.
+  #
+  # Modern Discourse versions expose group_list settings through a _map
+  # accessor that returns an array of group IDs. The fallback supports older
+  # versions that expose the raw pipe-separated setting value.
   def configured_group_ids(setting_name)
     map_method = "#{setting_name}_map"
 
-    if SiteSetting.respond_to?(map_method)
-      Array(SiteSetting.public_send(map_method))
-        .map(&:to_i)
-        .reject(&:zero?)
-    else
-      # Compatibility fallback for older Discourse versions.
-      SiteSetting.public_send(setting_name)
-        .to_s
-        .split("|")
-        .map(&:to_i)
-        .reject(&:zero?)
-    end
+    values =
+      if SiteSetting.respond_to?(map_method)
+        SiteSetting.public_send(map_method)
+      else
+        SiteSetting
+          .public_send(setting_name)
+          .to_s
+          .split("|")
+      end
+
+    Array(values)
+      .flatten
+      .map(&:to_i)
+      .reject(&:zero?)
+      .uniq
+  rescue StandardError => e
+    Rails.logger.error(
+      "[#{PLUGIN_NAME}] Could not read group setting #{setting_name}: " \
+      "#{e.class}: #{e.message}"
+    )
+
+    []
   end
 
   def configured_recipient_usernames
-    configured =
+    configured_names =
       SiteSetting
         .added_to_group_notifier_recipient_usernames
         .to_s
         .split("|")
         .map(&:strip)
         .reject(&:blank?)
+        .uniq
 
-    return [] if configured.blank?
+    return [] if configured_names.blank?
 
-    # Resolve usernames through username_lower, then use the canonical
-    # username stored by Discourse when passing targets to PostCreator.
-    users =
+    users_by_username =
       User
-        .where(username_lower: configured.map(&:downcase))
+        .where(username_lower: configured_names.map(&:downcase))
         .pluck(:username)
+        .index_by(&:downcase)
 
-    missing =
-      configured.reject do |username|
-        users.any? { |resolved| resolved.casecmp?(username) }
+    resolved_names = configured_names.filter_map do |username|
+      users_by_username[username.downcase]
+    end
+
+    missing_names =
+      configured_names.reject do |username|
+        users_by_username.key?(username.downcase)
       end
 
-    if missing.present?
+    if missing_names.present?
       Rails.logger.warn(
-        "[#{PLUGIN_NAME}] Ignoring unknown recipient usernames: #{missing.join(", ")}"
+        "[#{PLUGIN_NAME}] Ignoring unknown recipient usernames: " \
+        "#{missing_names.join(", ")}"
       )
     end
 
-    users.uniq
+    resolved_names.uniq
+  rescue StandardError => e
+    Rails.logger.error(
+      "[#{PLUGIN_NAME}] Could not resolve recipient usernames: " \
+      "#{e.class}: #{e.message}"
+    )
+
+    []
   end
 
   def configured_recipient_group_names
@@ -85,29 +103,71 @@ module ::AddedToGroupNotifier
 
     return [] if group_ids.blank?
 
-    Group.where(id: group_ids).pluck(:name).compact.uniq
-  end
+    existing_groups =
+      Group
+        .where(id: group_ids)
+        .pluck(:id, :name)
+        .to_h
 
-  def last_checked_at
-    stored = PluginStore.get(PLUGIN_NAME, LAST_CHECKED_AT_KEY)
+    missing_ids = group_ids - existing_groups.keys
 
-    return 10.minutes.ago if stored.blank?
+    if missing_ids.present?
+      Rails.logger.warn(
+        "[#{PLUGIN_NAME}] Ignoring nonexistent recipient group IDs: " \
+        "#{missing_ids.join(", ")}"
+      )
+    end
 
-    Time.zone.parse(stored.to_s)
-  rescue ArgumentError, TypeError
-    Rails.logger.warn(
-      "[#{PLUGIN_NAME}] Invalid stored last_checked_at value #{stored.inspect}; " \
-      "falling back to ten minutes ago"
+    group_ids.filter_map { |group_id| existing_groups[group_id] }.uniq
+  rescue StandardError => e
+    Rails.logger.error(
+      "[#{PLUGIN_NAME}] Could not resolve recipient groups: " \
+      "#{e.class}: #{e.message}"
     )
 
-    10.minutes.ago
+    []
   end
 
-  def save_last_checked_at(time)
+  def render_template(template, variables)
+    template.to_s.gsub(/%\{(\w+)\}/) do
+      variable_name = Regexp.last_match(1).to_sym
+
+      if TEMPLATE_VARIABLES.include?(variable_name)
+        variables.fetch(variable_name, "").to_s
+      else
+        Rails.logger.warn(
+          "[#{PLUGIN_NAME}] Unknown template variable: #{variable_name}"
+        )
+
+        "%{#{variable_name}}"
+      end
+    end
+  end
+
+  def read_last_checked_at
+    stored_value = PluginStore.get(PLUGIN_NAME, LAST_CHECKED_AT_KEY)
+
+    return POLLING_LOOKBACK.ago if stored_value.blank?
+
+    parsed_time = Time.zone.parse(stored_value.to_s)
+
+    return parsed_time if parsed_time.present?
+
+    raise ArgumentError, "stored timestamp could not be parsed"
+  rescue ArgumentError, TypeError => e
+    Rails.logger.warn(
+      "[#{PLUGIN_NAME}] Invalid stored polling timestamp " \
+      "#{stored_value.inspect}: #{e.message}. Using lookback window."
+    )
+
+    POLLING_LOOKBACK.ago
+  end
+
+  def write_last_checked_at(timestamp)
     PluginStore.set(
       PLUGIN_NAME,
       LAST_CHECKED_AT_KEY,
-      time.iso8601(6)
+      timestamp.in_time_zone.iso8601(6)
     )
   end
 
@@ -127,106 +187,80 @@ module ::AddedToGroupNotifier
     )
   end
 
-  def build_post_options(user, group)
-    vars = {
+  def create_notification!(group_user, recipient_usernames, recipient_group_names)
+    user = group_user.user
+    group = group_user.group
+
+    return :skipped if user.blank? || group.blank?
+    return :already_processed if already_processed?(group_user.id)
+
+    variables = {
       username: user.username,
       group_name: group.name,
-      added_at: Time.zone.at(group_user_created_at).iso8601
+      added_at: group_user.created_at.in_time_zone.iso8601
     }
 
-    recipient_usernames = configured_recipient_usernames
-    recipient_group_names = configured_recipient_group_names
-
-    options = {
+    post_options = {
       archetype: Archetype.private_message,
       title: render_template(
         SiteSetting.added_to_group_notifier_pm_title,
-        vars
+        variables
       ),
       raw: render_template(
         SiteSetting.added_to_group_notifier_pm_body,
-        vars
+        variables
       )
     }
 
     if recipient_usernames.present?
-      options[:target_usernames] = recipient_usernames.join(",")
+      post_options[:target_usernames] = recipient_usernames.join(",")
     end
 
     if recipient_group_names.present?
-      options[:target_group_names] = recipient_group_names.join(",")
+      post_options[:target_group_names] = recipient_group_names.join(",")
     end
 
-    options
-  end
+    creator = PostCreator.new(Discourse.system_user, post_options)
+    post = creator.create
 
-  # This method is set immediately before build_post_options is called so
-  # that the template can use the GroupUser creation timestamp.
-  def group_user_created_at
-    Thread.current[:added_to_group_notifier_group_user_created_at] || Time.zone.now
-  end
+    if post.blank?
+      error_message = creator.errors.full_messages.join(", ")
+      error_message = "unknown error" if error_message.blank?
 
-def send_notification!(group_user, recipient_usernames, recipient_group_names)
-  user = group_user.user
-  group = group_user.group
+      Rails.logger.warn(
+        "[#{PLUGIN_NAME}] Failed to create notification PM for " \
+        "GroupUser ##{group_user.id}: #{error_message}"
+      )
 
-  return :skip if user.blank? || group.blank?
-  return :already_processed if already_processed?(group_user.id)
+      return :failed
+    end
 
-  vars = {
-    username: user.username,
-    group_name: group.name,
-    added_at: group_user.created_at.in_time_zone.iso8601
-  }
+    # This is intentionally written only after PostCreator succeeds.
+    mark_processed!(group_user.id)
 
-  options = {
-    archetype: Archetype.private_message,
-    title: render_template(
-      SiteSetting.added_to_group_notifier_pm_title,
-      vars
-    ),
-    raw: render_template(
-      SiteSetting.added_to_group_notifier_pm_body,
-      vars
-    )
-  }
-
-  options[:target_usernames] = recipient_usernames.join(",") if recipient_usernames.present?
-  options[:target_group_names] = recipient_group_names.join(",") if recipient_group_names.present?
-
-  creator = PostCreator.new(Discourse.system_user, options)
-  post = creator.create
-
-  if post.blank?
-    Rails.logger.warn(
-      "[#{PLUGIN_NAME}] Failed to create PM for GroupUser ##{group_user.id}: " \
-      "#{creator.errors.full_messages.join(", ").presence || "unknown error"}"
+    :success
+  rescue StandardError => e
+    Rails.logger.error(
+      "[#{PLUGIN_NAME}] Exception processing GroupUser ##{group_user.id}: " \
+      "#{e.class}: #{e.message}\n" \
+      "#{Array(e.backtrace).first(10).join("\n")}"
     )
 
-    return :failed
+    :failed
   end
-
-  mark_processed!(group_user.id)
-  :success
-rescue StandardError => e
-  Rails.logger.error(
-    "[#{PLUGIN_NAME}] Exception while processing GroupUser ##{group_user.id}: " \
-    "#{e.class}: #{e.message}\n#{e.backtrace&.first(10)&.join("\n")}"
-  )
-
-  :failed
-end
 
   def check!
     return unless SiteSetting.added_to_group_notifier_enabled
 
-    # Prevent overlapping Sidekiq executions from processing the same rows.
-    DistributedMutex.synchronize(LOCK_NAME, validity: LOCK_VALIDITY) do
+    DistributedMutex.synchronize(
+      LOCK_NAME,
+      validity: LOCK_VALIDITY
+    ) do
       perform_check!
     end
   rescue DistributedMutex::MaximumAttemptsExceeded
     Rails.logger.info(
-      "[#{PLUGIN_NAME}] Another check is already running; skipping this run"
+      "[#{PLUGIN_NAME}] Another notifier check is already running; skipping."
     )
   end
 
@@ -241,20 +275,25 @@ end
 
     if recipient_usernames.blank? && recipient_group_names.blank?
       Rails.logger.warn(
-        "[#{PLUGIN_NAME}] Enabled but no valid recipients are configured; skipping"
+        "[#{PLUGIN_NAME}] The plugin is enabled, but no valid recipients " \
+        "are configured. Skipping this run."
       )
 
       return
     end
 
-    checked_from = last_checked_at
+    checked_from = read_last_checked_at
     checked_until = Time.zone.now
 
+    # The >= boundary deliberately creates a small overlap between runs.
+    # Processed markers prevent duplicate notifications for rows in that
+    # overlap, while reducing the chance of missing records with identical
+    # created_at timestamps.
     memberships =
       GroupUser
         .where(group_id: watched_group_ids)
         .where(
-          "created_at >= ? AND created_at <= ?",
+          "group_users.created_at >= ? AND group_users.created_at <= ?",
           checked_from,
           checked_until
         )
@@ -263,26 +302,26 @@ end
 
     earliest_failure_time = nil
 
-    memberships.find_each(batch_size: 100) do |group_user|
+    memberships.find_each(batch_size: BATCH_SIZE) do |group_user|
       result =
-        send_notification!(
+        create_notification!(
           group_user,
           recipient_usernames,
           recipient_group_names
         )
 
-      if result == :failed
-        timestamp = group_user.created_at.in_time_zone
+      next unless result == :failed
 
-        if earliest_failure_time.blank? || timestamp < earliest_failure_time
-          earliest_failure_time = timestamp
-        end
+      membership_time = group_user.created_at.in_time_zone
+
+      if earliest_failure_time.blank? ||
+          membership_time < earliest_failure_time
+        earliest_failure_time = membership_time
       end
     end
 
-    # If any message failed, move the cursor back to the earliest failed
-    # membership. Previously successful rows are protected by processed keys,
-    # while failed rows will be retried on the next run.
-    save_last_checked_at(earliest_failure_time || checked_until)
+    # Failed records remain inside the polling window and will be retried.
+    # Successful records are protected by their processed markers.
+    write_last_checked_at(earliest_failure_time || checked_until)
   end
 end
