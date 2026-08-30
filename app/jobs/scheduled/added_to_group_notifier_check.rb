@@ -1,5 +1,5 @@
 module Jobs
-  class AddedToGroupNotifierCheck < ::Jobs::Scheduled
+  class GroupAddNotifierCheck < ::Jobs::Scheduled
     every 5.minutes
 
     def execute(args)
