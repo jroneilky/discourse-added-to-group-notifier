@@ -1,0 +1,35 @@
+plugins:
+  added_to_group_notifier_enabled:
+    default: false
+    client: false
+
+  # Groups to watch. Multi-select group picker in the admin UI.
+  added_to_group_notifier_groups:
+    default: ""
+    type: group_list
+    list_type: compact
+    allow_any: false
+    client: false
+
+  # Pipe-separated usernames to PM. Edited as a list in the admin UI.
+  added_to_group_notifier_recipient_usernames:
+    default: ""
+    type: list
+    client: false
+
+  # Optional: groups to PM instead of (or in addition to) individual usernames.
+  added_to_group_notifier_recipient_groups:
+    default: ""
+    type: group_list
+    list_type: compact
+    allow_any: false
+    client: false
+
+  added_to_group_notifier_pm_title:
+    default: "New member in %{group_name}"
+    client: false
+
+  added_to_group_notifier_pm_body:
+    default: "%{username} was just added to the %{group_name} group at %{added_at}."
+    textarea: true
+    client: false

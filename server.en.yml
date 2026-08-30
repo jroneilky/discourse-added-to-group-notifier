@@ -1,0 +1,8 @@
+en:
+  site_settings:
+    added_to_group_notifier_enabled: "Enable the added-to-group notifier."
+    added_to_group_notifier_groups: "Send a notification whenever a user is added to any of these groups."
+    added_to_group_notifier_recipient_usernames: "Usernames to PM (pipe-separated) when a watched group gains a member."
+    added_to_group_notifier_recipient_groups: "Groups to PM (as a group message) when a watched group gains a member. Optional, in addition to or instead of recipient usernames."
+    added_to_group_notifier_pm_title: "Title of the notification PM. See the plugin README for available placeholders."
+    added_to_group_notifier_pm_body: "Body of the notification PM. See the plugin README for available placeholders."
