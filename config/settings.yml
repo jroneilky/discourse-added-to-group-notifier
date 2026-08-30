@@ -1,32 +1,45 @@
 plugins:
-  group_add_notifier_enabled:
+  added_to_group_notifier_enabled:
     default: false
     client: false
 
-  # Groups to watch. Multi-select group picker in the admin UI.
-  group_add_notifier_groups:
+  # Groups whose newly created memberships should trigger notifications.
+  added_to_group_notifier_groups:
     default: ""
     type: group_list
     list_type: compact
+    allow_any: false
     client: false
 
-  # Pipe-separated usernames to PM. Edited as a text string.
-  group_add_notifier_recipient_usernames:
+  # Pipe-separated usernames, for example:
+  # alice|bob|charlie
+  #
+  # This is intentionally a text setting rather than type: list because the
+  # values are arbitrary Discourse usernames and are not selected from a
+  # predefined choices list.
+  added_to_group_notifier_recipient_usernames:
     default: ""
-    type: string
+    type: text
+    description: "Pipe-separated usernames that should receive notifications."
     client: false
 
-  # Optional: groups to PM instead of (or in addition to) individual usernames.
-  group_add_notifier_recipient_groups:
+  # Groups whose members should receive the private messages.
+  added_to_group_notifier_recipient_groups:
     default: ""
     type: group_list
     list_type: compact
+    allow_any: false
     client: false
 
-  group_add_notifier_pm_title:
+  added_to_group_notifier_pm_title:
     default: "New member in %{group_name}"
+    type: string
+    description: "Private-message title template."
     client: false
 
-  group_add_notifier_pm_body:
+  added_to_group_notifier_pm_body:
     default: "%{username} was just added to the %{group_name} group at %{added_at}."
+    type: text
+    textarea: true
+    description: "Private-message body template."
     client: false
