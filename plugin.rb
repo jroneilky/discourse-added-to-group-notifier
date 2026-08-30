@@ -8,25 +8,19 @@ enabled_site_setting :added_to_group_notifier_enabled
 module ::AddedToGroupNotifier
   PLUGIN_NAME = "discourse-added-to-group-notifier"
 
-  # Replaces %{key} tokens in a template with values from vars.
-  # Deliberately does not use Ruby's String#% so that a stray "%"
-  # elsewhere in an admin-supplied template can't raise an error.
   def self.render_template(template, vars)
     template.to_s.gsub(/%\{(\w+)\}/) { vars[Regexp.last_match(1).to_sym].to_s }
   end
 
   def self.check!
-    # Safely parse watched groups (handles both IDs and Names to future-proof against Discourse updates)
-    watched_setting = SiteSetting.added_to_group_notifier_groups.to_s.split("|").map(&:strip).reject(&:blank?)
-    return if watched_setting.blank?
-
-    watched_group_ids = Group.where(id: watched_setting).or(Group.where(name: watched_setting)).pluck(:id)
+    # Safely parse group IDs as integers to prevent PostgreSQL type mismatch errors
+    watched_group_ids = SiteSetting.added_to_group_notifier_groups.to_s.split("|").map(&:to_i).reject(&:zero?)
     return if watched_group_ids.blank?
 
     recipient_usernames = SiteSetting.added_to_group_notifier_recipient_usernames.to_s.split("|").map(&:strip).reject(&:blank?)
     
-    recipient_group_setting = SiteSetting.added_to_group_notifier_recipient_groups.to_s.split("|").map(&:strip).reject(&:blank?)
-    recipient_group_names = recipient_group_setting.present? ? Group.where(id: recipient_group_setting).or(Group.where(name: recipient_group_setting)).pluck(:name) : []
+    recipient_group_ids = SiteSetting.added_to_group_notifier_recipient_groups.to_s.split("|").map(&:to_i).reject(&:zero?)
+    recipient_group_names = recipient_group_ids.present? ? Group.where(id: recipient_group_ids).pluck(:name) : []
 
     if recipient_usernames.blank? && recipient_group_names.blank?
       Rails.logger.warn("[discourse-added-to-group-notifier] Enabled but no recipients configured, skipping")
@@ -55,7 +49,6 @@ module ::AddedToGroupNotifier
       opts[:target_usernames] = recipient_usernames.join(",") if recipient_usernames.present?
       opts[:target_group_names] = recipient_group_names.join(",") if recipient_group_names.present?
 
-      # Use .create instead of .create! to ensure one failed PM doesn't crash the entire job
       creator = PostCreator.new(Discourse.system_user, opts)
       post = creator.create
       
@@ -66,4 +59,8 @@ module ::AddedToGroupNotifier
 
     PluginStore.set(PLUGIN_NAME, "last_checked_at", now.iso8601)
   end
+end
+
+after_initialize do
+  # Initialization hooks can go here if needed
 end
