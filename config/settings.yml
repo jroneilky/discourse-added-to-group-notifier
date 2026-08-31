@@ -1,6 +1,6 @@
 plugins:
   added_to_group_notifier_enabled:
-    default: false
+    default: true
     client: false
 
   added_to_group_notifier_groups:
