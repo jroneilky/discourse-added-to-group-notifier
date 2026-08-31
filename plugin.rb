@@ -3,6 +3,7 @@
 # version: 0.4
 # authors: jronielky
 
+require_relative "lib/discourse_added_to_group_notifier/engine"
 enabled_site_setting :added_to_group_notifier_enabled
 
 module ::AddedToGroupNotifier
