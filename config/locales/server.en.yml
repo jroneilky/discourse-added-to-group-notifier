@@ -2,12 +2,52 @@ en:
   site_settings:
     added_to_group_notifier_enabled: "Enable the added-to-group notifier."
 
-    added_to_group_notifier_groups: "Groups whose newly added members should trigger a notification."
+    added_to_group_notifier_groups: "Notifier 1 - Groups whose newly added members should trigger a notification."
 
-    added_to_group_notifier_recipient_usernames: "Pipe-separated usernames that should receive notification private messages."
+    added_to_group_notifier_recipient_usernames: "Notifier 1 - Pipe-separated usernames that should receive notification private messages."
 
-    added_to_group_notifier_recipient_groups: "Groups whose members should receive notification private messages. Optional; can be used with or instead of recipient usernames."
+    added_to_group_notifier_recipient_groups: "Notifier 1 - Groups whose members should receive notification private messages. Optional; can be used with or instead of recipient usernames."
 
-    added_to_group_notifier_pm_title: "Title template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+    added_to_group_notifier_pm_title: "Notifier 1 - Title template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
 
-    added_to_group_notifier_pm_body: "Body template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+    added_to_group_notifier_pm_body: "Notifier 1 - Body template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_2_groups: "Notifier 2 (optional) - Groups whose newly added members should trigger a notification. Leave blank to disable this notifier."
+
+    added_to_group_notifier_2_recipient_usernames: "Notifier 2 - Pipe-separated usernames that should receive notification private messages."
+
+    added_to_group_notifier_2_recipient_groups: "Notifier 2 - Groups whose members should receive notification private messages. Optional; can be used with or instead of recipient usernames."
+
+    added_to_group_notifier_2_pm_title: "Notifier 2 - Title template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_2_pm_body: "Notifier 2 - Body template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_3_groups: "Notifier 3 (optional) - Groups whose newly added members should trigger a notification. Leave blank to disable this notifier."
+
+    added_to_group_notifier_3_recipient_usernames: "Notifier 3 - Pipe-separated usernames that should receive notification private messages."
+
+    added_to_group_notifier_3_recipient_groups: "Notifier 3 - Groups whose members should receive notification private messages. Optional; can be used with or instead of recipient usernames."
+
+    added_to_group_notifier_3_pm_title: "Notifier 3 - Title template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_3_pm_body: "Notifier 3 - Body template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_4_groups: "Notifier 4 (optional) - Groups whose newly added members should trigger a notification. Leave blank to disable this notifier."
+
+    added_to_group_notifier_4_recipient_usernames: "Notifier 4 - Pipe-separated usernames that should receive notification private messages."
+
+    added_to_group_notifier_4_recipient_groups: "Notifier 4 - Groups whose members should receive notification private messages. Optional; can be used with or instead of recipient usernames."
+
+    added_to_group_notifier_4_pm_title: "Notifier 4 - Title template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_4_pm_body: "Notifier 4 - Body template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_5_groups: "Notifier 5 (optional) - Groups whose newly added members should trigger a notification. Leave blank to disable this notifier."
+
+    added_to_group_notifier_5_recipient_usernames: "Notifier 5 - Pipe-separated usernames that should receive notification private messages."
+
+    added_to_group_notifier_5_recipient_groups: "Notifier 5 - Groups whose members should receive notification private messages. Optional; can be used with or instead of recipient usernames."
+
+    added_to_group_notifier_5_pm_title: "Notifier 5 - Title template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."
+
+    added_to_group_notifier_5_pm_body: "Notifier 5 - Body template for the notification private message. Available placeholders: %{username}, %{group_name}, and %{added_at}."

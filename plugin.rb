@@ -1,6 +1,6 @@
 # name: discourse-added-to-group-notifier
-# about: Sends a PM (from the system user) to configured recipients when a user is added to one of a configured list of groups. Polls the DB on a schedule rather than relying on Discourse's user_added_to_group event, so it works reliably even when membership changes come from bulk/dynamic-group syncs that bypass that event.
-# version: 0.4
+# about: Sends a PM (from the system user) to configured recipients when a user is added to one of a configured list of groups. Supports up to 5 independent notifiers, each with its own watched groups, recipients, and message templates. Polls the DB on a schedule rather than relying on Discourse's user_added_to_group event, so it works reliably even when membership changes come from bulk/dynamic-group syncs that bypass that event.
+# version: 0.5
 # authors: jronielky
 
 require_relative "lib/discourse_added_to_group_notifier/engine"
@@ -20,7 +20,24 @@ module ::AddedToGroupNotifier
 
   TEMPLATE_VARIABLES = %i[username group_name added_at].freeze
 
+  # Slot 1 reuses the plugin's original (unsuffixed) setting names, so
+  # existing single-notifier installs keep working with zero reconfiguration.
+  # Slots 2-5 are optional, additional notifiers using suffixed setting
+  # names; leaving a slot's "groups" setting blank disables that slot.
+  NOTIFIER_SLOTS = (1..5).freeze
+
   module_function
+
+  # Maps a notifier slot + setting key (:groups, :recipient_usernames,
+  # :recipient_groups, :pm_title, :pm_body) to the underlying site setting
+  # name.
+  def setting_name(slot, key)
+    if slot == 1
+      :"added_to_group_notifier_#{key}"
+    else
+      :"added_to_group_notifier_#{slot}_#{key}"
+    end
+  end
 
   # Returns the numeric IDs configured in a Discourse group_list setting.
   #
@@ -54,10 +71,10 @@ module ::AddedToGroupNotifier
     []
   end
 
-  def configured_recipient_usernames
+  def configured_recipient_usernames(setting_name)
     configured_names =
       SiteSetting
-        .added_to_group_notifier_recipient_usernames
+        .public_send(setting_name)
         .to_s
         .split("|")
         .map(&:strip)
@@ -83,24 +100,23 @@ module ::AddedToGroupNotifier
 
     if missing_names.present?
       Rails.logger.warn(
-        "[#{PLUGIN_NAME}] Ignoring unknown recipient usernames: " \
-        "#{missing_names.join(", ")}"
+        "[#{PLUGIN_NAME}] Ignoring unknown recipient usernames " \
+        "(#{setting_name}): #{missing_names.join(", ")}"
       )
     end
 
     resolved_names.uniq
   rescue StandardError => e
     Rails.logger.error(
-      "[#{PLUGIN_NAME}] Could not resolve recipient usernames: " \
-      "#{e.class}: #{e.message}"
+      "[#{PLUGIN_NAME}] Could not resolve recipient usernames " \
+      "(#{setting_name}): #{e.class}: #{e.message}"
     )
 
     []
   end
 
-  def configured_recipient_group_names
-    group_ids =
-      configured_group_ids(:added_to_group_notifier_recipient_groups)
+  def configured_recipient_group_names(setting_name)
+    group_ids = configured_group_ids(setting_name)
 
     return [] if group_ids.blank?
 
@@ -114,16 +130,16 @@ module ::AddedToGroupNotifier
 
     if missing_ids.present?
       Rails.logger.warn(
-        "[#{PLUGIN_NAME}] Ignoring nonexistent recipient group IDs: " \
-        "#{missing_ids.join(", ")}"
+        "[#{PLUGIN_NAME}] Ignoring nonexistent recipient group IDs " \
+        "(#{setting_name}): #{missing_ids.join(", ")}"
       )
     end
 
     group_ids.filter_map { |group_id| existing_groups[group_id] }.uniq
   rescue StandardError => e
     Rails.logger.error(
-      "[#{PLUGIN_NAME}] Could not resolve recipient groups: " \
-      "#{e.class}: #{e.message}"
+      "[#{PLUGIN_NAME}] Could not resolve recipient groups " \
+      "(#{setting_name}): #{e.class}: #{e.message}"
     )
 
     []
@@ -172,28 +188,104 @@ module ::AddedToGroupNotifier
     )
   end
 
-  def processed_key(group_user_id)
-    "#{PROCESSED_PREFIX}#{group_user_id}"
+  # Slot 1 keeps the original, unsuffixed processed-marker key so upgrading
+  # from a single-notifier install doesn't re-notify recently processed
+  # rows. Slots 2-5 get their own independent marker per group_user, so
+  # notifiers with overlapping watched groups each fire independently.
+  def processed_key(group_user_id, slot)
+    return "#{PROCESSED_PREFIX}#{group_user_id}" if slot == 1
+
+    "#{PROCESSED_PREFIX}#{group_user_id}_notifier_#{slot}"
   end
 
-  def already_processed?(group_user_id)
-    PluginStore.get(PLUGIN_NAME, processed_key(group_user_id)).present?
+  def already_processed?(group_user_id, slot)
+    PluginStore.get(PLUGIN_NAME, processed_key(group_user_id, slot)).present?
   end
 
-  def mark_processed!(group_user_id)
-    PluginStore.set(
-      PLUGIN_NAME,
-      processed_key(group_user_id),
-      "1"
-    )
+  def mark_processed!(group_user_id, slot)
+    PluginStore.set(PLUGIN_NAME, processed_key(group_user_id, slot), "1")
   end
 
-  def create_notification!(group_user, recipient_usernames, recipient_group_names)
+  # Builds the list of configured, active notifiers. A slot is only active
+  # if it has at least one watched group configured, so notifiers 2-5 are
+  # entirely opt-in and require no setup if unused.
+  def active_notifiers
+    NOTIFIER_SLOTS.filter_map do |slot|
+      watched_group_ids = configured_group_ids(setting_name(slot, :groups))
+
+      next if watched_group_ids.blank?
+
+      recipient_usernames =
+        configured_recipient_usernames(setting_name(slot, :recipient_usernames))
+      recipient_group_names =
+        configured_recipient_group_names(setting_name(slot, :recipient_groups))
+
+      if recipient_usernames.blank? && recipient_group_names.blank?
+        Rails.logger.warn(
+          "[#{PLUGIN_NAME}] Notifier ##{slot} has watched groups configured " \
+          "but no valid recipients. Skipping it this run."
+        )
+
+        next
+      end
+
+      {
+        slot: slot,
+        watched_group_ids: watched_group_ids,
+        recipient_usernames: recipient_usernames,
+        recipient_group_names: recipient_group_names,
+        pm_title: SiteSetting.public_send(setting_name(slot, :pm_title)),
+        pm_body: SiteSetting.public_send(setting_name(slot, :pm_body))
+      }
+    end
+  end
+
+  # Iterates the given GroupUser scope in ascending (created_at, id) order,
+  # in batches, and yields each record.
+  #
+  # ActiveRecord's #find_each ignores any custom .order and forces primary-key
+  # ordering, which would break the chronological processing this plugin
+  # relies on. Keyset pagination on (created_at, id) keeps the intended order
+  # while still loading records in bounded batches.
+  #
+  # The scope passed in must NOT already carry an .order clause.
+  def each_membership_ordered(scope, batch_size:)
+    last_created_at = nil
+    last_id = nil
+
+    loop do
+      batch = scope
+
+      if last_created_at.present?
+        batch =
+          batch.where(
+            "group_users.created_at > :created_at OR " \
+            "(group_users.created_at = :created_at AND group_users.id > :id)",
+            created_at: last_created_at,
+            id: last_id
+          )
+      end
+
+      records = batch.order(:created_at, :id).limit(batch_size).to_a
+
+      break if records.empty?
+
+      records.each { |group_user| yield group_user }
+
+      last_record = records.last
+      last_created_at = last_record.created_at
+      last_id = last_record.id
+
+      break if records.size < batch_size
+    end
+  end
+
+  def create_notification!(group_user, notifier)
     user = group_user.user
     group = group_user.group
 
     return :skipped if user.blank? || group.blank?
-    return :already_processed if already_processed?(group_user.id)
+    return :already_processed if already_processed?(group_user.id, notifier[:slot])
 
     variables = {
       username: user.username,
@@ -203,22 +295,16 @@ module ::AddedToGroupNotifier
 
     post_options = {
       archetype: Archetype.private_message,
-      title: render_template(
-        SiteSetting.added_to_group_notifier_pm_title,
-        variables
-      ),
-      raw: render_template(
-        SiteSetting.added_to_group_notifier_pm_body,
-        variables
-      )
+      title: render_template(notifier[:pm_title], variables),
+      raw: render_template(notifier[:pm_body], variables)
     }
 
-    if recipient_usernames.present?
-      post_options[:target_usernames] = recipient_usernames.join(",")
+    if notifier[:recipient_usernames].present?
+      post_options[:target_usernames] = notifier[:recipient_usernames].join(",")
     end
 
-    if recipient_group_names.present?
-      post_options[:target_group_names] = recipient_group_names.join(",")
+    if notifier[:recipient_group_names].present?
+      post_options[:target_group_names] = notifier[:recipient_group_names].join(",")
     end
 
     creator = PostCreator.new(Discourse.system_user, post_options)
@@ -229,21 +315,21 @@ module ::AddedToGroupNotifier
       error_message = "unknown error" if error_message.blank?
 
       Rails.logger.warn(
-        "[#{PLUGIN_NAME}] Failed to create notification PM for " \
-        "GroupUser ##{group_user.id}: #{error_message}"
+        "[#{PLUGIN_NAME}] Notifier ##{notifier[:slot]} failed to create " \
+        "notification PM for GroupUser ##{group_user.id}: #{error_message}"
       )
 
       return :failed
     end
 
     # This is intentionally written only after PostCreator succeeds.
-    mark_processed!(group_user.id)
+    mark_processed!(group_user.id, notifier[:slot])
 
     :success
   rescue StandardError => e
     Rails.logger.error(
-      "[#{PLUGIN_NAME}] Exception processing GroupUser ##{group_user.id}: " \
-      "#{e.class}: #{e.message}\n" \
+      "[#{PLUGIN_NAME}] Notifier ##{notifier[:slot]} exception processing " \
+      "GroupUser ##{group_user.id}: #{e.class}: #{e.message}\n" \
       "#{Array(e.backtrace).first(10).join("\n")}"
     )
 
@@ -266,58 +352,41 @@ module ::AddedToGroupNotifier
   end
 
   def perform_check!
-    watched_group_ids =
-      configured_group_ids(:added_to_group_notifier_groups)
+    notifiers = active_notifiers
 
-    return if watched_group_ids.blank?
-
-    recipient_usernames = configured_recipient_usernames
-    recipient_group_names = configured_recipient_group_names
-
-    if recipient_usernames.blank? && recipient_group_names.blank?
-      Rails.logger.warn(
-        "[#{PLUGIN_NAME}] The plugin is enabled, but no valid recipients " \
-        "are configured. Skipping this run."
-      )
-
-      return
-    end
+    return if notifiers.blank?
 
     checked_from = read_last_checked_at
     checked_until = Time.zone.now
 
-    # The >= boundary deliberately creates a small overlap between runs.
-    # Processed markers prevent duplicate notifications for rows in that
-    # overlap, while reducing the chance of missing records with identical
-    # created_at timestamps.
-    memberships =
-      GroupUser
-        .where(group_id: watched_group_ids)
-        .where(
-          "group_users.created_at >= ? AND group_users.created_at <= ?",
-          checked_from,
-          checked_until
-        )
-        .includes(:user, :group)
-        .order(:created_at, :id)
-
     earliest_failure_time = nil
 
-    memberships.find_each(batch_size: BATCH_SIZE) do |group_user|
-      result =
-        create_notification!(
-          group_user,
-          recipient_usernames,
-          recipient_group_names
-        )
+    notifiers.each do |notifier|
+      # The >= boundary deliberately creates a small overlap between runs.
+      # Processed markers prevent duplicate notifications for rows in that
+      # overlap, while reducing the chance of missing records with identical
+      # created_at timestamps.
+      memberships =
+        GroupUser
+          .where(group_id: notifier[:watched_group_ids])
+          .where(
+            "group_users.created_at >= ? AND group_users.created_at <= ?",
+            checked_from,
+            checked_until
+          )
+          .includes(:user, :group)
 
-      next unless result == :failed
+      each_membership_ordered(memberships, batch_size: BATCH_SIZE) do |group_user|
+        result = create_notification!(group_user, notifier)
 
-      membership_time = group_user.created_at.in_time_zone
+        next unless result == :failed
 
-      if earliest_failure_time.blank? ||
-          membership_time < earliest_failure_time
-        earliest_failure_time = membership_time
+        membership_time = group_user.created_at.in_time_zone
+
+        if earliest_failure_time.blank? ||
+            membership_time < earliest_failure_time
+          earliest_failure_time = membership_time
+        end
       end
     end
 
